@@ -1,3 +1,5 @@
+wallet.dat*
+
 *.py[cod]
 
 # C extensions
