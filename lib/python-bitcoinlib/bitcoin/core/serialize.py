@@ -27,6 +27,16 @@ if sys.version > '3':
 else:
     from cStringIO import StringIO as BytesIO
 
+def Hash(msg):
+    """SHA256^2)(msg) -> bytes"""
+    return hashlib.sha256(hashlib.sha256(msg).digest()).digest()
+
+def Hash160(msg):
+    """RIPEME160(SHA256(msg)) -> bytes"""
+    h = hashlib.new('ripemd160')
+    h.update(hashlib.sha256(msg).digest())
+    return h.digest()
+
 MAX_SIZE = 0x02000000
 
 class SerializationError(Exception):
@@ -83,8 +93,11 @@ class Serializable(object):
     def __ne__(self, other):
         return not (self == other)
 
+    def get_hash(self):
+        return Hash(self.serialize())
+
     def __hash__(self):
-        return hash(self.serialize())
+        return hash(self.get_hash())
 
 class Serializer(object):
     """Base class for object serializers"""
@@ -233,13 +246,3 @@ def ser_int_vector(l):
     for i in l:
         r += struct.pack(b"<i", i)
     return r
-
-def Hash(msg):
-    """SHA256^2)(msg) -> bytes"""
-    return hashlib.sha256(hashlib.sha256(msg).digest()).digest()
-
-def Hash160(msg):
-    """RIPEME160(SHA256(msg)) -> bytes"""
-    h = hashlib.new('ripemd160')
-    h.update(hashlib.sha256(msg).digest())
-    return h.digest()

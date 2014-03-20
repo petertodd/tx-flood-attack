@@ -317,6 +317,15 @@ class CBlock(CBlockHeader):
                             nBits=self.nBits,
                             nNonce=self.nNonce)
 
+    def get_hash(self):
+        """Return the block hash
+
+        hashMerkleRoot is not modified, however it is calculated.
+        """
+        header = self.get_header()
+        header.hashMerkleRoot = self.calc_merkle_root()
+        return header.get_hash()
+
     def calc_merkle_root(self):
         hashes = []
         for tx in self.vtx:
