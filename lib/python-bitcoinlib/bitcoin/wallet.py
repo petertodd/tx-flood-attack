@@ -112,6 +112,10 @@ class CBitcoinSecret(bitcoin.base58.CBase58Data, CKey):
         self.__init__(None)
         return self
 
+    def to_secret_bytes(self):
+        """Return the 32-byte secret"""
+        return self[1:]
+
     def __init__(self, s):
         if self.nVersion != bitcoin.params.BASE58_PREFIXES['SECRET_KEY']:
             raise CBitcoinSecretError('Not a base58-encoded secret key: got nVersion=%d; expected nVersion=%d' % \
