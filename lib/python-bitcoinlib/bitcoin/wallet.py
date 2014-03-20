@@ -114,7 +114,7 @@ class CBitcoinSecret(bitcoin.base58.CBase58Data, CKey):
 
     def to_secret_bytes(self):
         """Return the 32-byte secret"""
-        return self[1:]
+        return bytes(self[:-1])
 
     def __init__(self, s):
         if self.nVersion != bitcoin.params.BASE58_PREFIXES['SECRET_KEY']:
