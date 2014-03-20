@@ -52,7 +52,7 @@ except ImportError:
     import urlparse
 
 import bitcoin
-from bitcoin.core import COIN, lx, b2lx, CBlock, CTransaction, COutPoint, CTxOut
+from bitcoin.core import COIN, lx, b2lx, CBlock, CBlockHeader, CTransaction, COutPoint, CTxOut
 from bitcoin.core.script import CScript
 from bitcoin.wallet import CBitcoinAddress
 
@@ -253,6 +253,26 @@ class Proxy(RawProxy):
             raise IndexError('%s.getblock(): %s (%d)' %
                     (self.__class__.__name__, ex.error['message'], ex.error['code']))
         return CBlock.deserialize(unhexlify(r))
+
+    def getblockheader(self, block_hash):
+        """Get block header <block_hash>
+
+        Raises IndexError if block_hash is not valid.
+
+        There's no getblockheader RPC command, so it actually calls getblock
+        but only deserializes the first 80 bytes.
+        """
+        try:
+            block_hash = b2lx(block_hash)
+        except TypeError:
+            raise TypeError('%s.getblock(): block_hash must be bytes; got %r instance' %
+                    (self.__class__.__name__, block_hash.__class__))
+        try:
+            r = self._call('getblock', block_hash, False)
+        except JSONRPCException as ex:
+            raise IndexError('%s.getblockheader(): %s (%d)' %
+                    (self.__class__.__name__, ex.error['message'], ex.error['code']))
+        return CBlockHeader.deserialize(unhexlify(r[0:80*2]))
 
     def getblockhash(self, height):
         """Return hash of block in best-block-chain at height.
