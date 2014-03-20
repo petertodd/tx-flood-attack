@@ -23,7 +23,8 @@ from bitcoin.core.script import (OP_0, OP_DUP, OP_HASH160, OP_EQUALVERIFY, OP_CH
 from bitcoin.core.scripteval import VerifyScript
 from bitcoin.wallet import CBitcoinAddress, CBitcoinSecret
 
-bitcoin.SelectParams('testnet')
+netname = 'testnet'
+bitcoin.SelectParams(netname)
 
 class Wallet:
     """Simple little deterministic wallet
@@ -104,7 +105,7 @@ class Wallet:
 
     def make_paytopubkeyhash(self, n = None):
         if n is None:
-            n = len(self.keypairs)
+            n = random.randrange(0, len(self.keypairs))
 
         secret_bytes = Hash(self.seed + struct.pack('>L', n))
         secret_key = CBitcoinSecret.from_secret_bytes(secret_bytes)
@@ -116,29 +117,40 @@ class Wallet:
 
         return scriptPubKey
 
+    def scan_tx(self, tx, block_hash=None):
+        tx_hash = tx.get_hash()
+
+        logging.debug('Checking tx %s for transactions' % b2lx(tx_hash))
+
+        num_found = 0
+        # Remove spent
+        for txin in tx.vin:
+            try:
+                del self.unspent_txouts[txin.prevout]
+            except KeyError:
+                continue
+            logging.info('Outpoint %r spent' % txin.prevout)
+
+        # Add unspent
+        for (i, txout) in enumerate(tx.vout):
+            if txout.scriptPubKey in self.keypairs:
+                outpoint = COutPoint(tx_hash, i)
+                if block_hash is not None:
+                    block_txout_set = self.outpoints_by_block.setdefault(block_hash, set())
+                    block_txout_set.add((outpoint, txout))
+                self.unspent_txouts[outpoint] = txout
+
+                logging.info('Found txout: %r -> %r' % (outpoint, txout))
+                num_found += 1
+
+        return num_found
+
     def scan_block(self, block):
         """Scan a new block for txouts to us"""
         block_hash = block.get_hash()
         num_found = 0
         for tx in block.vtx:
-            # Remove spent
-            for txin in tx.vin:
-                try:
-                    del self.unspent_txouts[txin.prevout]
-                except KeyError:
-                    continue
-                logging.debug('Outpoint %r spent' % txin.prevout)
-
-            # Add unspent
-            for (i, txout) in enumerate(tx.vout):
-                if txout.scriptPubKey in self.keypairs:
-                    outpoint = COutPoint(tx.get_hash(), i)
-                    block_txout_set = self.outpoints_by_block.setdefault(block_hash, set())
-                    block_txout_set.add((outpoint, txout))
-                    self.unspent_txouts[outpoint] = txout
-
-                    logging.debug('Found txout: %r -> %r' % (outpoint, txout))
-                    num_found += 1
+            num_found += self.scan_tx(tx, block_hash)
 
         return num_found
 
@@ -207,8 +219,13 @@ def getnewaddress_command(args):
     print('Pay to %s to fund your wallet' % fund_addr)
 
 def attack_command(args):
-    args.starting_height = 2**32-1
-    scan_command(args)
+    #args.starting_height = 2**32-1
+    #scan_command(args)
+
+    for txhash in args.rpc.getrawmempool():
+        txhash = lx(txhash)
+        tx = args.rpc.getrawtransaction(txhash)
+        args.wallet.scan_tx(tx)
 
     args.fee_per_kb = int(args.fee_per_kb * COIN)
 
@@ -235,7 +252,7 @@ def attack_command(args):
 
         # Assuming the whole tx is CTxOut's, each one is 46 bytes (1-of-1
         # CHECKMULTISIG) and the value out needs to be at least 1000 satoshis.
-        avg_txout_size = 46
+        avg_txout_size = 25+1+8
         num_txouts = args.target_tx_size // avg_txout_size
         min_value_out = 1000
         sum_min_value_out = num_txouts * min_value_out
@@ -261,7 +278,7 @@ def attack_command(args):
             txin = CTxIn(outpoint, dummy_scriptSig)
             tx.vin.append(txin)
             #tx_size += len(txin.serialize())
-            tx_size += 116 # hardcoding for some speed
+            tx_size += 116+34 # hardcoding for some speed
 
         total_funds -= sum_value_in
 
@@ -274,7 +291,7 @@ def attack_command(args):
         # Split the funds out evenly among all transaction outputs.
         per_txout_value = (sum_value_in - fees) // num_txouts
         for i in range(num_txouts):
-            scriptPubKey = args.wallet.make_multisig()
+            scriptPubKey = args.wallet.make_paytopubkeyhash()
             txout = CTxOut(per_txout_value, scriptPubKey)
             tx.vout.append(txout)
 
@@ -321,12 +338,12 @@ def attack_command(args):
             print(b2x(tx.serialize()))
             import pdb; pdb.set_trace()
 
-        #time.sleep(1)
+        time.sleep(0.1)
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--wallet', action='store',
-    default='wallet.dat',
+    default=None,
     help='Wallet file')
 
 subparsers = parser.add_subparsers(title='commands')
@@ -356,7 +373,7 @@ parser_attack.add_argument('--fee-per-kb', action='store',
 parser_attack.add_argument('--target-tx-size', action='store',
                            dest='target_tx_size',
                            type=int,
-                           default=90000,
+                           default=1000,
                            help='target transaction size')
 parser_attack.set_defaults(func=attack_command)
 
@@ -366,6 +383,8 @@ args.rpc = bitcoin.rpc.Proxy()
 
 logging.root.setLevel(logging.DEBUG)
 
+if args.wallet is None:
+    args.wallet = 'wallet-%s.dat' % netname
 if os.path.exists(args.wallet):
     args.wallet = Wallet.load(args.wallet)
 
